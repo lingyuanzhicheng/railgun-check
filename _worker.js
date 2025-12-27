@@ -1242,6 +1242,7 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
     let isChecking = false;
     const ipCheckResults = new Map(); // 缓存IP检查结果
     let pageLoadTimestamp; // 页面加载时的时间戳
+    let verifiedToken = null; // 保存验证通过的token
     
     // 计算时间戳的函数
     function calculateTimestamp() {
@@ -1434,6 +1435,7 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
         const data = await response.json();
         
         if (data.success) {
+          verifiedToken = token;
           showToast('Token验证成功！');
           tokenSection.style.display = 'none';
           proxyipSection.style.display = 'block';
@@ -1542,7 +1544,7 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
     
     // 检查单个IP
     async function checkSingleIP(proxyip, resultDiv) {
-      const response = await fetch(\`./check?proxyip=\${encodeURIComponent(proxyip)}\`);
+      const response = await fetch(\`./check?proxyip=\${encodeURIComponent(proxyip)}\${verifiedToken ? '&token=' + encodeURIComponent(verifiedToken) : ''}\`);
       const data = await response.json();
       
       if (data.success) {
@@ -1786,7 +1788,7 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
     // 检查IP状态
     async function checkIPStatus(ip) {
       try {
-        const response = await fetch(\`./check?proxyip=\${encodeURIComponent(ip)}\`);
+        const response = await fetch(\`./check?proxyip=\${encodeURIComponent(ip)}\${verifiedToken ? '&token=' + encodeURIComponent(verifiedToken) : ''}\`);
         const data = await response.json();
         return data;
       } catch (error) {
