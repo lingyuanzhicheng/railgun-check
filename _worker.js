@@ -1,16 +1,12 @@
 import { connect } from "cloudflare:sockets";
-let 临时TOKEN, 永久TOKEN;
+let 永久TOKEN;
 export default {
   async fetch(request, env, ctx) {
     const 网站图标 = env.ICO || 'https://cf-assets.www.cloudflare.com/dzlvafdwdttg/19kSkLSfWtDcspvQI5pit4/c5630cf25d589a0de91978ca29486259/performance-acceleration-bolt.svg';
     const url = new URL(request.url);
-    const UA = request.headers.get('User-Agent') || 'null';
     const path = url.pathname;
     const hostname = url.hostname;
-    const currentDate = new Date();
-    const timestamp = Math.ceil(currentDate.getTime() / (1000 * 60 * 31)); // 每31分钟一个时间戳
-    临时TOKEN = await 双重哈希(url.hostname + timestamp + UA);
-    永久TOKEN = env.TOKEN || 临时TOKEN;
+    永久TOKEN = env.TOKEN || '';
 
     // 不区分大小写检查路径
     if (path.toLowerCase() === '/check') {
@@ -87,20 +83,24 @@ export default {
         });
       }
     } else if (path.toLowerCase() === '/resolve') {
-      if (!url.searchParams.has('token') || (url.searchParams.get('token') !== 临时TOKEN) && (url.searchParams.get('token') !== 永久TOKEN)) {
-        return new Response(JSON.stringify({
-          status: "error",
-          message: `域名查询失败: 无效的TOKEN`,
-          timestamp: new Date().toISOString()
-        }, null, 4), {
-          status: 403,
-          headers: {
-            "content-type": "application/json; charset=UTF-8",
-            'Access-Control-Allow-Origin': '*'
-          }
-        });
-      }
       if (!url.searchParams.has('domain')) return new Response('Missing domain parameter', { status: 400 });
+      
+      if (env.TOKEN) {
+        if (!url.searchParams.has('token') || url.searchParams.get('token') !== 永久TOKEN) {
+          return new Response(JSON.stringify({
+            status: "error",
+            message: `域名查询失败: 无效的TOKEN`,
+            timestamp: new Date().toISOString()
+          }, null, 4), {
+            status: 403,
+            headers: {
+              "content-type": "application/json; charset=UTF-8",
+              'Access-Control-Allow-Origin': '*'
+            }
+          });
+        }
+      }
+      
       const domain = url.searchParams.get('domain');
 
       try {
@@ -121,19 +121,6 @@ export default {
         });
       }
     } else if (path.toLowerCase() === '/ip-info') {
-      if (!url.searchParams.has('token') || (url.searchParams.get('token') !== 临时TOKEN) && (url.searchParams.get('token') !== 永久TOKEN)) {
-        return new Response(JSON.stringify({
-          status: "error",
-          message: `IP查询失败: 无效的TOKEN`,
-          timestamp: new Date().toISOString()
-        }, null, 4), {
-          status: 403,
-          headers: {
-            "content-type": "application/json; charset=UTF-8",
-            'Access-Control-Allow-Origin': '*'
-          }
-        });
-      }
       let ip = url.searchParams.get('ip') || request.headers.get('CF-Connecting-IP');
       if (!ip) {
         return new Response(JSON.stringify({
@@ -148,6 +135,22 @@ export default {
             'Access-Control-Allow-Origin': '*'
           }
         });
+      }
+      
+      if (env.TOKEN) {
+        if (!url.searchParams.has('token') || url.searchParams.get('token') !== 永久TOKEN) {
+          return new Response(JSON.stringify({
+            status: "error",
+            message: `IP查询失败: 无效的TOKEN`,
+            timestamp: new Date().toISOString()
+          }, null, 4), {
+            status: 403,
+            headers: {
+              "content-type": "application/json; charset=UTF-8",
+              'Access-Control-Allow-Origin': '*'
+            }
+          });
+        }
       }
 
       if (ip.includes('[')) {
@@ -386,20 +389,6 @@ async function 整理(内容) {
   });
 
   return 整理数组;
-}
-
-async function 双重哈希(文本) {
-  const 编码器 = new TextEncoder();
-
-  const 第一次哈希 = await crypto.subtle.digest('MD5', 编码器.encode(文本));
-  const 第一次哈希数组 = Array.from(new Uint8Array(第一次哈希));
-  const 第一次十六进制 = 第一次哈希数组.map(字节 => 字节.toString(16).padStart(2, '0')).join('');
-
-  const 第二次哈希 = await crypto.subtle.digest('MD5', 编码器.encode(第一次十六进制.slice(7, 27)));
-  const 第二次哈希数组 = Array.from(new Uint8Array(第二次哈希));
-  const 第二次十六进制 = 第二次哈希数组.map(字节 => 字节.toString(16).padStart(2, '0')).join('');
-
-  return 第二次十六进制.toLowerCase();
 }
 
 async function 验证反代IP(反代IP地址, 指定端口) {
@@ -1241,13 +1230,26 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
     // 全局变量
     let isChecking = false;
     const ipCheckResults = new Map(); // 缓存IP检查结果
-    let pageLoadTimestamp; // 页面加载时的时间戳
     let verifiedToken = null; // 保存验证通过的token
+    let tokenVerifiedTime = null; // 记录token验证通过的时间
+    const TOKEN_EXPIRY_TIME = 15 * 60 * 1000; // 15分钟过期时间（毫秒）
     
-    // 计算时间戳的函数
-    function calculateTimestamp() {
-      const currentDate = new Date();
-      return Math.ceil(currentDate.getTime() / (1000 * 60 * 13)); // 每13分钟一个时间戳
+    // 检查token是否过期
+    function isTokenExpired() {
+      if (!tokenVerifiedTime) return true;
+      const now = Date.now();
+      return (now - tokenVerifiedTime) > TOKEN_EXPIRY_TIME;
+    }
+    
+    // 更新token验证时间
+    function updateTokenVerifiedTime() {
+      tokenVerifiedTime = Date.now();
+    }
+    
+    // 清除token
+    function clearToken() {
+      verifiedToken = null;
+      tokenVerifiedTime = null;
     }
     
     // 添加前端的代理IP格式验证函数
@@ -1271,12 +1273,19 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
     
     // 初始化
     document.addEventListener('DOMContentLoaded', function() {
-      // 记录页面加载时的时间戳
-      pageLoadTimestamp = calculateTimestamp();
-      console.log('页面加载完成，时间戳:', pageLoadTimestamp);
-      
       const input = document.getElementById('proxyip');
       input.focus();
+      
+      // 检查token是否过期
+      if (isTokenExpired()) {
+        clearToken();
+        const tokenSection = document.getElementById('tokenSection');
+        const proxyipSection = document.getElementById('proxyipSection');
+        if (tokenSection && proxyipSection) {
+          tokenSection.style.display = 'block';
+          proxyipSection.style.display = 'none';
+        }
+      }
       
       // 直接解析当前URL路径
       const currentPath = window.location.pathname;
@@ -1436,6 +1445,7 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
         
         if (data.success) {
           verifiedToken = token;
+          updateTokenVerifiedTime();
           showToast('Token验证成功！');
           tokenSection.style.display = 'none';
           proxyipSection.style.display = 'block';
@@ -1478,30 +1488,22 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
         return;
       }
       
-      // 检查时间戳是否过期
-      const currentTimestamp = calculateTimestamp();
-      console.log('点击检测时的时间戳:', currentTimestamp);
-      console.log('页面加载时的时间戳:', pageLoadTimestamp);
-      console.log('时间戳是否一致:', currentTimestamp === pageLoadTimestamp);
-      
-      if (currentTimestamp !== pageLoadTimestamp) {
-        // 时间戳已过期，需要重新加载页面获取最新TOKEN
-        const currentHost = window.location.host;
-        const currentProtocol = window.location.protocol;
-        const redirectUrl = \`\${currentProtocol}//\${currentHost}/\${encodeURIComponent(proxyip)}\`;
-        
-        console.log('时间戳过期，即将跳转到:', redirectUrl);
-        showToast('TOKEN已过期，正在刷新页面...');
-        
-        // 延迟跳转，让用户看到提示
-        setTimeout(() => {
-          window.location.href = redirectUrl;
-        }, 1000);
-        
+      // 检查token是否过期
+      if (isTokenExpired()) {
+        clearToken();
+        const tokenSection = document.getElementById('tokenSection');
+        const proxyipSection = document.getElementById('proxyipSection');
+        if (tokenSection && proxyipSection) {
+          tokenSection.style.display = 'block';
+          proxyipSection.style.display = 'none';
+          showToast('Token已过期，请重新验证');
+          document.getElementById('tokenInput').focus();
+        }
         return;
       }
       
-      console.log('时间戳验证通过，继续执行检测逻辑');
+      // 更新token验证时间
+      updateTokenVerifiedTime();
       
       // 保存到localStorage
       try {
@@ -1548,6 +1550,7 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
       const data = await response.json();
       
       if (data.success) {
+        updateTokenVerifiedTime();
         const ipInfo = await getIPInfo(data.proxyIP);
         const ipInfoHTML = formatIPInfo(ipInfo);
         const responseTimeHTML = data.responseTime && data.responseTime > 0 ? 
@@ -1611,8 +1614,12 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
       }
       
       // 解析域名
-      const resolveResponse = await fetch(\`./resolve?domain=\${encodeURIComponent(cleanDomain)}&token=${临时TOKEN}\`);
+      const resolveResponse = await fetch(\`./resolve?domain=\${encodeURIComponent(cleanDomain)}\${verifiedToken ? '&token=' + encodeURIComponent(verifiedToken) : ''}\`);
       const resolveData = await resolveResponse.json();
+      
+      if (resolveData.success) {
+        updateTokenVerifiedTime();
+      }
       
       if (!resolveData.success) {
         throw new Error(resolveData.error || '域名解析失败');
@@ -1762,7 +1769,7 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
     async function getIPInfo(ip) {
       try {
         const cleanIP = ip.replace(/[\\[\\]]/g, '');
-        const response = await fetch(\`./ip-info?ip=\${encodeURIComponent(cleanIP)}&token=${临时TOKEN}\`);
+        const response = await fetch(\`./ip-info?ip=\${encodeURIComponent(cleanIP)}\${verifiedToken ? '&token=' + encodeURIComponent(verifiedToken) : ''}\`);
         const data = await response.json();
         return data;
       } catch (error) {
@@ -1790,6 +1797,9 @@ curl "https://${hostname}/check?proxyip=1.2.3.4:443${token ? '&token=YOUR_TOKEN'
       try {
         const response = await fetch(\`./check?proxyip=\${encodeURIComponent(ip)}\${verifiedToken ? '&token=' + encodeURIComponent(verifiedToken) : ''}\`);
         const data = await response.json();
+        if (data.success) {
+          updateTokenVerifiedTime();
+        }
         return data;
       } catch (error) {
         return { success: false, error: error.message };
